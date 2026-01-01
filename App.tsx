@@ -1,0 +1,475 @@
+import React, { useState, useEffect } from 'react';
+import { Activity, RefreshCw, UploadCloud, AlertOctagon, X, FileCheck, LogOut, LayoutDashboard, FileText } from 'lucide-react';
+import { CovenantRules, SAPEntry, ReconciliationItem, FinancialHealth, HeadroomMetrics } from './types';
+import { MOCK_SAP_DATA, SAMPLE_LMA_TEXT } from './constants';
+import { analyzeLMAAgreement } from './services/geminiService';
+import { runReconciliation } from './services/reconciliationEngine';
+import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
+
+// Components
+import Auth from './components/Auth';
+import DashboardView from './components/DashboardView';
+
+enum AppState {
+  AUTH,
+  BORROWER_UPLOAD,
+  BORROWER_PROCESSING,
+  BORROWER_DASHBOARD,
+  AGENT_LIST,
+  AGENT_VIEW_CERTIFICATE
+}
+
+// Minimal Interface for List View
+interface CertificateRecord {
+    id: string;
+    borrower_name: string;
+    period: string;
+    status: string;
+    created_at: string;
+    data: {
+        covenants: CovenantRules;
+        health: FinancialHealth;
+        headroom: HeadroomMetrics;
+        reconciliation: ReconciliationItem[];
+    };
+}
+
+const App: React.FC = () => {
+  // Auth State
+  const [session, setSession] = useState<any>(null);
+  const [userRole, setUserRole] = useState<'borrower' | 'agent' | null>(null);
+
+  // App Flow State
+  const [viewState, setViewState] = useState<AppState>(AppState.AUTH);
+  const [loading, setLoading] = useState(false);
+  const [processingStep, setProcessingStep] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+
+  // Borrower Data State
+  const [lmaText, setLmaText] = useState<string>(SAMPLE_LMA_TEXT);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [covenants, setCovenants] = useState<CovenantRules | null>(null);
+  const [sapData, setSapData] = useState<SAPEntry[]>([]);
+  const [reconciliation, setReconciliation] = useState<ReconciliationItem[]>([]);
+  const [health, setHealth] = useState<FinancialHealth | null>(null);
+  const [headroom, setHeadroom] = useState<HeadroomMetrics | null>(null);
+
+  // Agent Data State
+  const [certificates, setCertificates] = useState<CertificateRecord[]>([]);
+  const [selectedCertificate, setSelectedCertificate] = useState<CertificateRecord | null>(null);
+
+  // AUTH HANDLERS
+  const handleLogin = (session: any, role: string) => {
+      setSession(session);
+      setUserRole(role as 'borrower' | 'agent');
+      if (role === 'agent') {
+        fetchCertificates();
+        setViewState(AppState.AGENT_LIST);
+      } else {
+        setViewState(AppState.BORROWER_UPLOAD);
+      }
+  };
+
+  const handleLogout = async () => {
+      if (isSupabaseConfigured()) {
+        await supabase.auth.signOut();
+      }
+      setSession(null);
+      setUserRole(null);
+      setViewState(AppState.AUTH);
+      // Reset State
+      setCovenants(null);
+      setCertificates([]);
+  };
+
+  const handleDemo = (role: string) => {
+      // Mock Login for Demo
+      setSession({ user: { id: 'demo-user', email: 'demo@example.com' } });
+      setUserRole(role as 'borrower' | 'agent');
+      if (role === 'agent') {
+        // Mock Certificates
+        setCertificates([{
+            id: 'demo-cert-1',
+            borrower_name: 'Nomad Foods Limited',
+            period: 'Q1 2025',
+            status: 'submitted',
+            created_at: new Date().toISOString(),
+            data: { 
+                // We'll populate this if clicked, for now simple placeholder
+                covenants: {} as any, 
+                health: {} as any, 
+                headroom: {} as any, 
+                reconciliation: [] 
+            }
+        }]);
+        setViewState(AppState.AGENT_LIST);
+      } else {
+        setViewState(AppState.BORROWER_UPLOAD);
+      }
+  };
+
+  // AGENT FETCHING
+  const fetchCertificates = async () => {
+      setLoading(true);
+      if (isSupabaseConfigured()) {
+        const { data, error } = await supabase.from('certificates').select('*').order('created_at', { ascending: false });
+        if (!error && data) {
+            setCertificates(data as CertificateRecord[]);
+        } else {
+            console.error("Fetch error", error);
+        }
+      } else {
+          // Demo Mode - no fetch
+      }
+      setLoading(false);
+  };
+
+  const handleAgentSelectCertificate = (cert: CertificateRecord) => {
+      // In a real app we might fetch the specific big JSON blob here if we didn't fetch it in the list
+      // For now assuming we have it
+      setSelectedCertificate(cert);
+      
+      // If demo mode and data is empty, we might need to regenerate/mock it, 
+      // but for simplicity let's assume demo users go through borrower flow first or we use the MOCK constants.
+      if (!cert.data || Object.keys(cert.data.covenants).length === 0) {
+         // Fallback for demo display purposes if the record is a stub
+         setError("This is a demo stub. Real data would load here.");
+      } else {
+         setCovenants(cert.data.covenants);
+         setHealth(cert.data.health);
+         setHeadroom(cert.data.headroom);
+         setReconciliation(cert.data.reconciliation);
+         setViewState(AppState.AGENT_VIEW_CERTIFICATE);
+      }
+  };
+
+
+  // BORROWER ACTIONS
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (file.type === 'application/pdf') {
+        setPdfFile(file);
+        setError(null);
+      } else {
+        setError("Only PDF files are supported.");
+      }
+    }
+  };
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  const handleProcessAgreement = async () => {
+    setViewState(AppState.BORROWER_PROCESSING);
+    setProcessingStep('Initializing Ingestion Agent...');
+    
+    try {
+      // Step 1: Gemini Analysis
+      setProcessingStep('Gemini Agent analyzing Agreement...');
+      let input: string | { data: string, mimeType: string } = lmaText;
+      let currentPdfData: { name: string, data: string } | null = null;
+      
+      if (pdfFile) {
+        setProcessingStep('Reading PDF Document...');
+        const base64Data = await fileToBase64(pdfFile);
+        input = { data: base64Data, mimeType: 'application/pdf' };
+        currentPdfData = { name: pdfFile.name, data: base64Data };
+        setProcessingStep('Gemini Agent analyzing PDF Content...');
+      }
+
+      const extractedRules = await analyzeLMAAgreement(input);
+      if (currentPdfData) extractedRules.sourceDocument = currentPdfData;
+
+      setCovenants(extractedRules);
+
+      // Step 2: ERP Connection
+      setProcessingStep('Connecting to SAP ERP (Mock Interface)...');
+      await new Promise(resolve => setTimeout(resolve, 1500)); 
+      setSapData(MOCK_SAP_DATA);
+
+      // Step 3: Reconciliation
+      setProcessingStep('Running Reconciliation Engine...');
+      const result = runReconciliation(MOCK_SAP_DATA, extractedRules);
+      
+      setReconciliation(result.reconciliation);
+      setHealth(result.health);
+      setHeadroom(result.headroom);
+
+      setProcessingStep('Complete.');
+      setTimeout(() => setViewState(AppState.BORROWER_DASHBOARD), 800);
+
+    } catch (err) {
+      console.error(err);
+      setError("Failed to process agreement.");
+      setViewState(AppState.BORROWER_UPLOAD);
+    }
+  };
+
+  const handleSubmitCertificate = async () => {
+    if (!session || !covenants || !health || !headroom) return;
+    setLoading(true);
+    
+    const payload = {
+        user_id: session.user.id,
+        borrower_name: covenants.dealMetadata.borrower || 'Unknown Borrower',
+        period: 'Q1 2025', // Should be dynamic
+        status: 'submitted',
+        data: {
+            covenants,
+            health,
+            headroom,
+            reconciliation
+        }
+    };
+
+    if (isSupabaseConfigured()) {
+        const { error } = await supabase.from('certificates').insert([payload]);
+        if (error) {
+            setError("Failed to save to database: " + error.message);
+        } else {
+            alert("Certificate Submitted Successfully to Facility Agent.");
+            // Reset flow
+            setCovenants(null);
+            setViewState(AppState.BORROWER_UPLOAD);
+        }
+    } else {
+        // Demo persistence
+        alert("Demo Mode: Certificate 'Submitted'. (Data not persisted)");
+        setCovenants(null);
+        setViewState(AppState.BORROWER_UPLOAD);
+    }
+    setLoading(false);
+  };
+
+
+  // RENDER HELPERS
+  if (viewState === AppState.AUTH) {
+      return <Auth onLogin={handleLogin} onDemo={handleDemo} />;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex font-sans">
+      
+      {/* Sidebar */}
+      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col fixed h-full z-10 hidden md:flex">
+        <div className="p-6 border-b border-slate-100">
+          <div className="flex items-center gap-2 text-emerald-600 font-bold text-xl">
+            <Activity />
+            <span>Syndicate<span className="text-slate-900">Bridge</span></span>
+          </div>
+          <p className="text-xs text-slate-500 mt-2">
+            Role: <span className="font-semibold uppercase text-emerald-600">{userRole}</span>
+          </p>
+        </div>
+        
+        <nav className="flex-1 p-4 space-y-2">
+          {userRole === 'borrower' && (
+             <button 
+                onClick={() => setViewState(AppState.BORROWER_UPLOAD)}
+                className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.BORROWER_UPLOAD ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
+             >
+                <UploadCloud size={20} />
+                <span className="font-medium">New Certificate</span>
+             </button>
+          )}
+
+          {userRole === 'agent' && (
+             <button 
+                onClick={() => { fetchCertificates(); setViewState(AppState.AGENT_LIST); }}
+                className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.AGENT_LIST ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
+             >
+                <LayoutDashboard size={20} />
+                <span className="font-medium">Certificates</span>
+             </button>
+          )}
+        </nav>
+
+        <div className="p-4 border-t border-slate-100">
+           <button onClick={handleLogout} className="flex items-center gap-2 text-slate-500 hover:text-red-600 transition-colors w-full px-4 py-2">
+             <LogOut size={16} />
+             <span>Sign Out</span>
+           </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 md:ml-64 p-8 overflow-y-auto">
+        
+        {/* Header */}
+        <header className="flex justify-between items-center mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">
+               {viewState === AppState.BORROWER_UPLOAD && 'Compliance Certificate Setup'}
+               {viewState === AppState.BORROWER_DASHBOARD && 'Review & Submit'}
+               {viewState === AppState.AGENT_LIST && 'Submitted Certificates'}
+               {viewState === AppState.AGENT_VIEW_CERTIFICATE && 'Certificate Review'}
+            </h1>
+            <p className="text-slate-500">
+               {userRole === 'borrower' ? 'Prepare and submit your quarterly compliance data.' : 'Review incoming certificates from borrowers.'}
+            </p>
+          </div>
+          {viewState === AppState.AGENT_VIEW_CERTIFICATE && (
+              <button onClick={() => setViewState(AppState.AGENT_LIST)} className="px-4 py-2 border rounded-lg hover:bg-slate-100 text-sm">
+                  Back to List
+              </button>
+          )}
+        </header>
+
+        {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-lg mb-6 flex items-center gap-3">
+                <AlertOctagon />
+                {error}
+                <button onClick={() => setError(null)} className="ml-auto hover:text-red-900 underline">Dismiss</button>
+            </div>
+        )}
+
+        {/* --- VIEW: AGENT LIST --- */}
+        {viewState === AppState.AGENT_LIST && (
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-500">
+                        <thead className="bg-slate-50 text-slate-700 uppercase font-semibold border-b border-slate-200">
+                            <tr>
+                                <th className="px-6 py-4">Borrower</th>
+                                <th className="px-6 py-4">Period</th>
+                                <th className="px-6 py-4">Status</th>
+                                <th className="px-6 py-4">Submitted</th>
+                                <th className="px-6 py-4 text-right">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {certificates.length === 0 ? (
+                                <tr>
+                                    <td colSpan={5} className="px-6 py-8 text-center text-slate-400 italic">No certificates found.</td>
+                                </tr>
+                            ) : (
+                                certificates.map((cert) => (
+                                    <tr key={cert.id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="px-6 py-4 font-medium text-slate-900">{cert.borrower_name}</td>
+                                        <td className="px-6 py-4">{cert.period}</td>
+                                        <td className="px-6 py-4">
+                                            <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold uppercase">{cert.status}</span>
+                                        </td>
+                                        <td className="px-6 py-4">{new Date(cert.created_at).toLocaleDateString()}</td>
+                                        <td className="px-6 py-4 text-right">
+                                            <button 
+                                                onClick={() => handleAgentSelectCertificate(cert)}
+                                                className="text-emerald-600 hover:text-emerald-800 font-medium hover:underline"
+                                            >
+                                                View Details
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        )}
+
+        {/* --- VIEW: BORROWER UPLOAD --- */}
+        {viewState === AppState.BORROWER_UPLOAD && (
+          <div className="max-w-3xl mx-auto">
+            <div className="bg-white border border-slate-200 rounded-xl p-8 shadow-lg">
+              <div className="mb-6 flex items-center gap-4">
+                <div className="p-3 bg-emerald-50 rounded-full text-emerald-600">
+                  <FileText size={32} />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">LMA Facility Agreement</h2>
+                  <p className="text-sm text-slate-500">Upload PDF to begin extraction.</p>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                {!pdfFile ? (
+                  <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors group">
+                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                      <UploadCloud className="w-10 h-10 mb-3 text-slate-400 group-hover:text-emerald-600 transition-colors" />
+                      <p className="mb-2 text-sm text-slate-500"><span className="font-semibold">Click to upload</span> or drag and drop PDF</p>
+                    </div>
+                    <input type="file" className="hidden" accept=".pdf" onChange={handleFileChange} />
+                  </label>
+                ) : (
+                  <div className="flex items-center justify-between w-full p-4 border border-emerald-200 bg-emerald-50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <FileCheck className="text-emerald-600" size={24} />
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">{pdfFile.name}</p>
+                        <p className="text-xs text-emerald-700/80">{(pdfFile.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                    </div>
+                    <button onClick={() => setPdfFile(null)} className="p-2 hover:bg-white rounded-full text-slate-500 hover:text-red-500 transition-colors">
+                      <X size={20} />
+                    </button>
+                  </div>
+                )}
+                
+                <div className="flex items-center gap-4">
+                    <div className="h-px bg-slate-200 flex-1"></div>
+                    <span className="text-slate-400 text-xs uppercase font-bold">Or Paste Text</span>
+                    <div className="h-px bg-slate-200 flex-1"></div>
+                </div>
+
+                <textarea 
+                  className={`w-full h-48 bg-slate-50 border border-slate-300 rounded-lg p-4 font-mono text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 focus:outline-none resize-none ${pdfFile ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  value={lmaText}
+                  onChange={(e) => setLmaText(e.target.value)}
+                  placeholder={pdfFile ? "File selected." : "Paste agreement text..."}
+                  disabled={!!pdfFile}
+                />
+              </div>
+
+              <div className="mt-8 flex justify-end">
+                <button 
+                  onClick={handleProcessAgreement}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-lg font-semibold flex items-center gap-2 transition-transform active:scale-95 shadow-lg shadow-emerald-500/20"
+                >
+                  <Activity size={18} />
+                  Extract & Process
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- VIEW: PROCESSING --- */}
+        {viewState === AppState.BORROWER_PROCESSING && (
+          <div className="h-[60vh] flex flex-col items-center justify-center">
+            <div className="w-16 h-16 border-4 border-slate-200 border-t-emerald-600 rounded-full animate-spin mb-6"></div>
+            <h2 className="text-xl font-semibold text-slate-900 mb-2">Analyzing Agreement</h2>
+            <p className="text-emerald-600 animate-pulse">{processingStep}</p>
+          </div>
+        )}
+
+        {/* --- VIEW: DASHBOARDS (Borrower & Agent) --- */}
+        {(viewState === AppState.BORROWER_DASHBOARD || viewState === AppState.AGENT_VIEW_CERTIFICATE) && covenants && headroom && health && (
+            <DashboardView 
+                covenants={covenants}
+                headroom={headroom}
+                health={health}
+                reconciliation={reconciliation}
+                userRole={userRole || 'borrower'}
+                onSave={handleSubmitCertificate}
+                isSaving={loading}
+                readOnly={viewState === AppState.AGENT_VIEW_CERTIFICATE}
+            />
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default App;

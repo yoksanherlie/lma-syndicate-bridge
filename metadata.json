@@ -1,0 +1,5 @@
+{
+  "name": "Syndicate Bridge 2",
+  "description": "A high-performance FinTech dashboard bridging the gap between LMA Facility Agreements (Legal) and SAP ERP Data (Financial) using GenAI for covenant extraction and real-time reconciliation monitoring.",
+  "requestFramePermissions": []
+}
