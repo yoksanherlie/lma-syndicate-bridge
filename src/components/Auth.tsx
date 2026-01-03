@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
-import { ShieldAlert, LogIn, UserCircle, Activity } from 'lucide-react';
+import { ShieldAlert, Activity, Info } from 'lucide-react';
 
 interface AuthProps {
   onLogin: (session: any, role: string) => void;
@@ -34,9 +34,8 @@ const Auth: React.FC<AuthProps> = ({ onLogin, onDemo }) => {
           }
         });
         if (error) throw error;
-        // Manually insert profile if trigger not set up or for safety
+        
         if (data.user) {
-            await supabase.from('profiles').insert([{ id: data.user.id, email, role }]);
             alert('Signup successful! Please log in.');
             setIsSignUp(false);
         }
@@ -47,10 +46,10 @@ const Auth: React.FC<AuthProps> = ({ onLogin, onDemo }) => {
         });
         if (error) throw error;
         
-        // Fetch Role
+        // Fetch Role from Metadata
         if (data.user) {
-            const { data: profile } = await supabase.from('profiles').select('role').eq('id', data.user.id).single();
-            onLogin(data.session, profile?.role || 'borrower');
+            const userRole = data.user.user_metadata?.role || 'borrower';
+            onLogin(data.session, userRole);
         }
       }
     } catch (err: any) {
@@ -69,6 +68,14 @@ const Auth: React.FC<AuthProps> = ({ onLogin, onDemo }) => {
             </div>
             <h1 className="text-2xl font-bold text-slate-900">Syndicate<span className="text-emerald-600">Bridge</span></h1>
             <p className="text-slate-500 text-sm">Secure Compliance Platform</p>
+        </div>
+
+        <div className="bg-blue-50 border border-blue-200 text-blue-800 p-3 rounded-lg mb-6 text-xs flex items-start gap-2">
+            <Info size={16} className="mt-0.5 shrink-0" />
+            <div>
+                <p className="font-semibold">Notice: Mock Data</p>
+                <p>This platform is currently in demo mode. All data presented, including borrower details and facility balances, is mock data for demonstration purposes.</p>
+            </div>
         </div>
 
         {error && (
@@ -148,22 +155,33 @@ const Auth: React.FC<AuthProps> = ({ onLogin, onDemo }) => {
                 </button>
              </div>
 
-             <div className="relative">
+             <div className="relative mb-6">
                 <div className="absolute inset-0 flex items-center">
                     <div className="w-full border-t border-slate-200"></div>
                 </div>
                 <div className="relative flex justify-center text-sm">
-                    <span className="px-2 bg-white text-slate-500">Or try Demo Mode</span>
+                    <span className="px-2 bg-white text-slate-500">Sample Credentials</span>
                 </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 mt-4">
-                <button onClick={() => onDemo('borrower')} className="py-2 px-4 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium transition-colors">
-                    Demo as Borrower
-                </button>
-                <button onClick={() => onDemo('agent')} className="py-2 px-4 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium transition-colors">
-                    Demo as Agent
-                </button>
+            <div className="space-y-4 mb-6">
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs">
+                    <p className="font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                        Borrower Account
+                    </p>
+                    <p className="text-slate-500"><span className="font-medium">Email:</span> borrower_demo@bridge.com</p>
+                    <p className="text-slate-500"><span className="font-medium">Password:</span> testdemo</p>
+                </div>
+
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs">
+                    <p className="font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                        Facility Agent Account
+                    </p>
+                    <p className="text-slate-500"><span className="font-medium">Email:</span> agent_demo@bridge2.com</p>
+                    <p className="text-slate-500"><span className="font-medium">Password:</span> testdemo</p>
+                </div>
             </div>
         </div>
       </div>

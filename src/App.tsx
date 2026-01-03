@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, RefreshCw, UploadCloud, AlertOctagon, X, FileCheck, LogOut, LayoutDashboard, FileText } from 'lucide-react';
+import { Activity, UploadCloud, AlertOctagon, X, FileCheck, LogOut, LayoutDashboard, FileText } from 'lucide-react';
 import { CovenantRules, SAPEntry, ReconciliationItem, FinancialHealth, HeadroomMetrics } from './types';
 import { MOCK_SAP_DATA, SAMPLE_LMA_TEXT } from './constants';
 import { analyzeLMAAgreement } from './services/geminiService';
 import { runReconciliation } from './services/reconciliationEngine';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
+import { saveCertificate } from './services/supabaseService';
 
 // Components
 import Auth from './components/Auth';
@@ -15,14 +16,16 @@ enum AppState {
   BORROWER_UPLOAD,
   BORROWER_PROCESSING,
   BORROWER_DASHBOARD,
+  BORROWER_CERTIFICATE_LIST,
   AGENT_LIST,
-  AGENT_VIEW_CERTIFICATE
+  VIEW_CERTIFICATE
 }
 
 // Minimal Interface for List View
 interface CertificateRecord {
     id: string;
     borrower_name: string;
+    facility_agent: string;
     period: string;
     status: string;
     created_at: string;
@@ -58,6 +61,53 @@ const App: React.FC = () => {
   const [certificates, setCertificates] = useState<CertificateRecord[]>([]);
   const [selectedCertificate, setSelectedCertificate] = useState<CertificateRecord | null>(null);
 
+  useEffect(() => {
+    // 1. Initial Session Check
+    const checkInitialSession = async () => {
+      if (!isSupabaseConfigured()) return;
+      
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setSession(session);
+        const role = session.user.user_metadata?.role || 'borrower';
+        setUserRole(role);
+        
+        // Navigate to appropriate view
+        if (role === 'agent') {
+            setViewState(AppState.AGENT_LIST);
+            // We'll call fetchCertificates in another useEffect or inside here
+        } else {
+            setViewState(AppState.BORROWER_UPLOAD);
+        }
+      }
+    };
+
+    checkInitialSession();
+
+    // 2. Auth Listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+        const role = session.user.user_metadata?.role || 'borrower';
+        setUserRole(role);
+      } else {
+        setUserRole(null);
+        setViewState(AppState.AUTH);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Fetch certificates when role/session changes and we are in a list view
+  useEffect(() => {
+    if (session && userRole) {
+        if (viewState === AppState.AGENT_LIST || viewState === AppState.BORROWER_CERTIFICATE_LIST) {
+            fetchCertificates();
+        }
+    }
+  }, [session, userRole, viewState]);
+
   // AUTH HANDLERS
   const handleLogin = (session: any, role: string) => {
       setSession(session);
@@ -84,7 +134,13 @@ const App: React.FC = () => {
 
   const handleDemo = (role: string) => {
       // Mock Login for Demo
-      setSession({ user: { id: 'demo-user', email: 'demo@example.com' } });
+      setSession({ 
+          user: { 
+              id: 'demo-user', 
+              email: 'demo@example.com',
+              user_metadata: { role }
+          } 
+      });
       setUserRole(role as 'borrower' | 'agent');
       if (role === 'agent') {
         // Mock Certificates
@@ -112,7 +168,15 @@ const App: React.FC = () => {
   const fetchCertificates = async () => {
       setLoading(true);
       if (isSupabaseConfigured()) {
-        const { data, error } = await supabase.from('certificates').select('*').order('created_at', { ascending: false });
+        let query = supabase.from('certificates').select('*').order('created_at', { ascending: false });
+        
+        // For borrowers, we still only show their own in their list view
+        if (userRole === 'borrower') {
+            query = query.eq('user_id', session.user.id);
+        }
+        // For agents, we show EVERYTHING (no filter applied)
+
+        const { data, error } = await query;
         if (!error && data) {
             setCertificates(data as CertificateRecord[]);
         } else {
@@ -124,11 +188,11 @@ const App: React.FC = () => {
       setLoading(false);
   };
 
-  const handleAgentSelectCertificate = (cert: CertificateRecord) => {
+  const handleSelectCertificate = (cert: CertificateRecord) => {
       // In a real app we might fetch the specific big JSON blob here if we didn't fetch it in the list
       // For now assuming we have it
       setSelectedCertificate(cert);
-      
+
       // If demo mode and data is empty, we might need to regenerate/mock it, 
       // but for simplicity let's assume demo users go through borrower flow first or we use the MOCK constants.
       if (!cert.data || Object.keys(cert.data.covenants).length === 0) {
@@ -139,7 +203,7 @@ const App: React.FC = () => {
          setHealth(cert.data.health);
          setHeadroom(cert.data.headroom);
          setReconciliation(cert.data.reconciliation);
-         setViewState(AppState.AGENT_VIEW_CERTIFICATE);
+         setViewState(AppState.VIEW_CERTIFICATE);
       }
   };
 
@@ -206,6 +270,20 @@ const App: React.FC = () => {
       setHealth(result.health);
       setHeadroom(result.headroom);
 
+      // Save the extracted data to Supabase
+      if (isSupabaseConfigured()) {
+        await saveCertificate(
+          session.user.id,
+          extractedRules.dealMetadata.borrower || 'Unknown Borrower',
+          extractedRules.dealMetadata.facilityAgent || 'Unknown Agent',
+          'Q1 2025', // Should be dynamic
+          extractedRules,
+          result.health,
+          result.headroom,
+          result.reconciliation
+        );
+      }
+
       setProcessingStep('Complete.');
       setTimeout(() => setViewState(AppState.BORROWER_DASHBOARD), 800);
 
@@ -220,36 +298,33 @@ const App: React.FC = () => {
     if (!session || !covenants || !health || !headroom) return;
     setLoading(true);
     
-    const payload = {
-        user_id: session.user.id,
-        borrower_name: covenants.dealMetadata.borrower || 'Unknown Borrower',
-        period: 'Q1 2025', // Should be dynamic
-        status: 'submitted',
-        data: {
-            covenants,
-            health,
-            headroom,
-            reconciliation
-        }
-    };
-
-    if (isSupabaseConfigured()) {
-        const { error } = await supabase.from('certificates').insert([payload]);
-        if (error) {
-            setError("Failed to save to database: " + error.message);
-        } else {
-            alert("Certificate Submitted Successfully to Facility Agent.");
-            // Reset flow
-            setCovenants(null);
-            setViewState(AppState.BORROWER_UPLOAD);
-        }
-    } else {
+    try {
+      if (isSupabaseConfigured()) {
+        await saveCertificate(
+          session.user.id,
+          covenants.dealMetadata.borrower || 'Unknown Borrower',
+          covenants.dealMetadata.facilityAgent || 'Unknown Agent',
+          'Q1 2025', // Should be dynamic
+          covenants,
+          health,
+          headroom,
+          reconciliation
+        );
+        alert("Certificate Submitted Successfully to Facility Agent.");
+        // Reset flow
+        setCovenants(null);
+        setViewState(AppState.BORROWER_UPLOAD);
+      } else {
         // Demo persistence
         alert("Demo Mode: Certificate 'Submitted'. (Data not persisted)");
         setCovenants(null);
         setViewState(AppState.BORROWER_UPLOAD);
+      }
+    } catch (error) {
+      setError("Failed to save to database: " + error.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
 
@@ -275,13 +350,22 @@ const App: React.FC = () => {
         
         <nav className="flex-1 p-4 space-y-2">
           {userRole === 'borrower' && (
-             <button 
-                onClick={() => setViewState(AppState.BORROWER_UPLOAD)}
-                className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.BORROWER_UPLOAD ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
-             >
-                <UploadCloud size={20} />
-                <span className="font-medium">New Certificate</span>
-             </button>
+            <>
+              <button 
+                  onClick={() => setViewState(AppState.BORROWER_UPLOAD)}
+                  className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.BORROWER_UPLOAD ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
+              >
+                  <UploadCloud size={20} />
+                  <span className="font-medium">New Certificate</span>
+              </button>
+              <button
+                  onClick={() => { fetchCertificates(); setViewState(AppState.BORROWER_CERTIFICATE_LIST); }}
+                  className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.BORROWER_CERTIFICATE_LIST ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
+              >
+                  <LayoutDashboard size={20} />
+                  <span className="font-medium">My Certificates</span>
+              </button>
+            </>
           )}
 
           {userRole === 'agent' && (
@@ -312,15 +396,16 @@ const App: React.FC = () => {
             <h1 className="text-2xl font-bold text-slate-900">
                {viewState === AppState.BORROWER_UPLOAD && 'Compliance Certificate Setup'}
                {viewState === AppState.BORROWER_DASHBOARD && 'Review & Submit'}
+               {viewState === AppState.BORROWER_CERTIFICATE_LIST && 'My Submitted Certificates'}
                {viewState === AppState.AGENT_LIST && 'Submitted Certificates'}
-               {viewState === AppState.AGENT_VIEW_CERTIFICATE && 'Certificate Review'}
+               {viewState === AppState.VIEW_CERTIFICATE && 'Certificate Review'}
             </h1>
             <p className="text-slate-500">
                {userRole === 'borrower' ? 'Prepare and submit your quarterly compliance data.' : 'Review incoming certificates from borrowers.'}
             </p>
           </div>
-          {viewState === AppState.AGENT_VIEW_CERTIFICATE && (
-              <button onClick={() => setViewState(AppState.AGENT_LIST)} className="px-4 py-2 border rounded-lg hover:bg-slate-100 text-sm">
+          {viewState === AppState.VIEW_CERTIFICATE && (
+              <button onClick={() => setViewState(userRole === 'borrower' ? AppState.BORROWER_CERTIFICATE_LIST : AppState.AGENT_LIST)} className="px-4 py-2 border rounded-lg hover:bg-slate-100 text-sm">
                   Back to List
               </button>
           )}
@@ -334,6 +419,60 @@ const App: React.FC = () => {
             </div>
         )}
 
+        {/* --- VIEW: BORROWER CERTIFICATE LIST --- */}
+        {viewState === AppState.BORROWER_CERTIFICATE_LIST && (
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-500">
+                        <thead className="bg-slate-50 text-slate-700 uppercase font-semibold border-b border-slate-200">
+                            <tr>
+                                <th className="px-6 py-4">Borrower</th>
+                                <th className="px-6 py-4">Facility Agent</th>
+                                <th className="px-6 py-4">Period</th>
+                                <th className="px-6 py-4">Status</th>
+                                <th className="px-6 py-4">Submitted</th>
+                                <th className="px-6 py-4 text-right">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {loading && (
+                                <tr>
+                                    <td colSpan={6} className="p-0 h-1 bg-slate-100 overflow-hidden">
+                                        <div className="h-full bg-emerald-500 animate-progress origin-left w-full"></div>
+                                    </td>
+                                </tr>
+                            )}
+                            {!loading && certificates.length === 0 ? (
+                                <tr>
+                                    <td colSpan={6} className="px-6 py-8 text-center text-slate-400 italic">No certificates found.</td>
+                                </tr>
+                            ) : (
+                                certificates.map((cert) => (
+                                    <tr key={cert.id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="px-6 py-4 font-medium text-slate-900">{cert.borrower_name}</td>
+                                        <td className="px-6 py-4">{cert.facility_agent || '-'}</td>
+                                        <td className="px-6 py-4">{cert.period}</td>
+                                        <td className="px-6 py-4">
+                                            <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold uppercase">{cert.status}</span>
+                                        </td>
+                                        <td className="px-6 py-4">{new Date(cert.created_at).toLocaleDateString()}</td>
+                                        <td className="px-6 py-4 text-right">
+                                            <button 
+                                                onClick={() => handleSelectCertificate(cert)}
+                                                className="text-emerald-600 hover:text-emerald-800 font-medium hover:underline"
+                                            >
+                                                View Details
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        )}
+
         {/* --- VIEW: AGENT LIST --- */}
         {viewState === AppState.AGENT_LIST && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
@@ -342,6 +481,7 @@ const App: React.FC = () => {
                         <thead className="bg-slate-50 text-slate-700 uppercase font-semibold border-b border-slate-200">
                             <tr>
                                 <th className="px-6 py-4">Borrower</th>
+                                <th className="px-6 py-4">Facility Agent</th>
                                 <th className="px-6 py-4">Period</th>
                                 <th className="px-6 py-4">Status</th>
                                 <th className="px-6 py-4">Submitted</th>
@@ -349,14 +489,22 @@ const App: React.FC = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {certificates.length === 0 ? (
+                            {loading && (
                                 <tr>
-                                    <td colSpan={5} className="px-6 py-8 text-center text-slate-400 italic">No certificates found.</td>
+                                    <td colSpan={6} className="p-0 h-1 bg-slate-100 overflow-hidden">
+                                        <div className="h-full bg-emerald-500 animate-progress origin-left w-full"></div>
+                                    </td>
+                                </tr>
+                            )}
+                            {!loading && certificates.length === 0 ? (
+                                <tr>
+                                    <td colSpan={6} className="px-6 py-8 text-center text-slate-400 italic">No certificates found.</td>
                                 </tr>
                             ) : (
                                 certificates.map((cert) => (
                                     <tr key={cert.id} className="hover:bg-slate-50 transition-colors">
                                         <td className="px-6 py-4 font-medium text-slate-900">{cert.borrower_name}</td>
+                                        <td className="px-6 py-4">{cert.facility_agent || '-'}</td>
                                         <td className="px-6 py-4">{cert.period}</td>
                                         <td className="px-6 py-4">
                                             <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold uppercase">{cert.status}</span>
@@ -364,7 +512,7 @@ const App: React.FC = () => {
                                         <td className="px-6 py-4">{new Date(cert.created_at).toLocaleDateString()}</td>
                                         <td className="px-6 py-4 text-right">
                                             <button 
-                                                onClick={() => handleAgentSelectCertificate(cert)}
+                                                onClick={() => handleSelectCertificate(cert)}
                                                 className="text-emerald-600 hover:text-emerald-800 font-medium hover:underline"
                                             >
                                                 View Details
@@ -455,7 +603,7 @@ const App: React.FC = () => {
         )}
 
         {/* --- VIEW: DASHBOARDS (Borrower & Agent) --- */}
-        {(viewState === AppState.BORROWER_DASHBOARD || viewState === AppState.AGENT_VIEW_CERTIFICATE) && covenants && headroom && health && (
+        {(viewState === AppState.BORROWER_DASHBOARD || viewState === AppState.VIEW_CERTIFICATE) && covenants && headroom && health && (
             <DashboardView 
                 covenants={covenants}
                 headroom={headroom}
@@ -464,7 +612,7 @@ const App: React.FC = () => {
                 userRole={userRole || 'borrower'}
                 onSave={handleSubmitCertificate}
                 isSaving={loading}
-                readOnly={viewState === AppState.AGENT_VIEW_CERTIFICATE}
+                readOnly={viewState === AppState.VIEW_CERTIFICATE}
             />
         )}
       </main>

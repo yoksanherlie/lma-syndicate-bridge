@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { FileText, Database, Activity, AlertOctagon, CheckCircle2, RefreshCw, UploadCloud, ShieldAlert, X, FileCheck, Quote, Copy, Check, Gauge, PauseCircle, Info, Leaf, TrendingDown, Save, Send } from 'lucide-react';
-import { CovenantRules, SAPEntry, ReconciliationItem, FinancialHealth, HeadroomMetrics } from '../types';
+import { FileText, Database, CheckCircle2, RefreshCw, Quote, Copy, Check, PauseCircle, Leaf, TrendingDown, Send } from 'lucide-react';
+import { CovenantRules, ReconciliationItem, FinancialHealth, HeadroomMetrics } from '../types';
 import HeadroomChart from './HeadroomChart';
 import ReconciliationTable from './ReconciliationTable';
 
