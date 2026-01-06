@@ -24,6 +24,8 @@ export interface SAPEntry {
   category: 'Revenue' | 'OpEx' | 'D&A' | 'Restructuring' | 'Transaction' | 'FX' | 'Interest Expense' | 'Interest Income' | 'Gross Debt' | 'Cash' | 'Leases';
 }
 
+export type CertificateStatus = 'draft' | 'submitted';
+
 // The Bridge Row
 export interface ReconciliationItem {
   lmaItem: string; // e.g., "Operating Profit"
@@ -119,8 +121,39 @@ export interface CovenantRules {
       unit?: string;
     }>;
   };
-  sourceDocument?: {
+}
+
+export interface ComplianceCertificateData {
+  header: {
+    to: string;
+    from: string;
+    date: string;
+    agreement_title: string;
+  };
+  period: string;
+  covenants: Array<{
     name: string;
-    data: string; // Base64 string
-  } | null;
+    formula: string;
+    actual_value: string;
+    required_value: string;
+    compliant: boolean;
+  }>;
+  ebitda_reconciliation: Array<{
+    item: string;
+    amount: string;
+    is_add_back: boolean;
+  }>;
+  ebitda_total: string;
+  net_debt_reconciliation: Array<{
+    item: string;
+    amount: string;
+  }>;
+  net_debt_total: string;
+  sustainability?: Array<{
+    kpi: string;
+    target: string;
+    actual?: string;
+    status: string;
+  }>;
+  confirmation_text: string;
 }

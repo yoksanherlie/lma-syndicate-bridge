@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { CovenantRules } from '../types';
+import { CovenantRules, ComplianceCertificateData, FinancialHealth, HeadroomMetrics, ReconciliationItem } from '../types';
 
 export const analyzeLMAAgreement = async (input: string | { data: string, mimeType: string }): Promise<CovenantRules> => {
   // Guidelines: Use process.env.API_KEY directly when initializing.
@@ -241,6 +241,159 @@ ${jsonBlockEnd}
         ],
         exclusions: ["Unrealized FX Gains"]
       }
+    };
+  }
+};
+
+export const generateComplianceCertificateData = async (
+  agreementInput: string | { data: string, mimeType: string },
+  health: FinancialHealth,
+  headroom: HeadroomMetrics,
+  reconciliation: ReconciliationItem[],
+  covenants: CovenantRules,
+  period: string
+): Promise<ComplianceCertificateData> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  const financialContext = {
+    period,
+    health,
+    headroom,
+    reconciliation: reconciliation.map(r => ({
+      item: r.lmaItem,
+      amount: r.finalAmount,
+      section: r.section,
+      isAddBack: r.isAddBack
+    })),
+    baseCurrency: covenants.dealMetadata.baseCurrency
+  };
+
+  const promptText = `
+    **Role:** You are a Legal-Financial Analyst. 
+    **Task:** Generate the structured JSON data for a "Schedule 7 Form of Compliance Certificate" based on the attached Facility Agreement and the provided financial calculation results.
+    
+    **Financial Results Context:**
+    ${JSON.stringify(financialContext, null, 2)}
+
+    **Instructions:**
+    1. From the Agreement, identify the formal names of the parties (Borrower, Facility Agent) and the full title/date of the Agreement.
+    2. Map the provided Financial Results into the standard Schedule 7 format.
+    3. Ensure all currency values are formatted as strings with currency symbols (e.g. "€1,234,567.00").
+    4. Provide a standard "Confirmation Text" for clause 3 (e.g. "We confirm that no Default is outstanding...").
+    5. Output ONLY valid JSON.
+  `;
+
+  let contentParts = [];
+  if (typeof agreementInput === 'string') {
+    contentParts.push({ text: `Agreement Text:\n"${agreementInput}"\n\n${promptText}` });
+  } else {
+    contentParts.push({
+      inlineData: {
+        mimeType: agreementInput.mimeType,
+        data: agreementInput.data
+      }
+    });
+    contentParts.push({ text: promptText });
+  }
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: { parts: contentParts },
+      config: {
+        systemInstruction: "You are a professional auditor and legal analyst. Return only JSON data for a compliance certificate.",
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            header: {
+              type: Type.OBJECT,
+              properties: {
+                to: { type: Type.STRING },
+                from: { type: Type.STRING },
+                date: { type: Type.STRING },
+                agreement_title: { type: Type.STRING }
+              }
+            },
+            period: { type: Type.STRING },
+            covenants: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  formula: { type: Type.STRING },
+                  actual_value: { type: Type.STRING },
+                  required_value: { type: Type.STRING },
+                  compliant: { type: Type.BOOLEAN }
+                }
+              }
+            },
+            ebitda_reconciliation: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  item: { type: Type.STRING },
+                  amount: { type: Type.STRING },
+                  is_add_back: { type: Type.BOOLEAN }
+                }
+              }
+            },
+            ebitda_total: { type: Type.STRING },
+            net_debt_reconciliation: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  item: { type: Type.STRING },
+                  amount: { type: Type.STRING }
+                }
+              }
+            },
+            net_debt_total: { type: Type.STRING },
+            confirmation_text: { type: Type.STRING }
+          }
+        }
+      }
+    });
+
+    let jsonText = response.text || "{}";
+    jsonText = jsonText.replace(new RegExp("```json", "g"), "").replace(new RegExp("```", "g"), "").trim();
+
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error("Gemini Certificate Data Error:", error);
+    // Fallback logic
+    return {
+      header: {
+        to: covenants.dealMetadata.facilityAgent || "Facility Agent",
+        from: covenants.dealMetadata.borrower || "Borrower",
+        date: new Date().toLocaleDateString(),
+        agreement_title: `Facility Agreement dated ${covenants.dealMetadata.agreementDate}`
+      },
+      period: period,
+      covenants: [
+        {
+          name: "Leverage Ratio",
+          formula: "Net Debt / EBITDA",
+          actual_value: `${headroom.leverageRatio.toFixed(2)}x`,
+          required_value: `${headroom.leverageThreshold.toFixed(2)}x`,
+          compliant: headroom.leverageRatio <= headroom.leverageThreshold
+        }
+      ],
+      ebitda_reconciliation: reconciliation.filter(r => r.section === 'EBITDA').map(r => ({
+        item: r.lmaItem,
+        amount: new Intl.NumberFormat('en-IE', { style: 'currency', currency: covenants.dealMetadata.baseCurrency }).format(r.finalAmount),
+        is_add_back: r.isAddBack
+      })),
+      ebitda_total: new Intl.NumberFormat('en-IE', { style: 'currency', currency: covenants.dealMetadata.baseCurrency }).format(health.adjustedEBITDA),
+      net_debt_reconciliation: reconciliation.filter(r => r.section === 'NET_DEBT').map(r => ({
+        item: r.lmaItem,
+        amount: new Intl.NumberFormat('en-IE', { style: 'currency', currency: covenants.dealMetadata.baseCurrency }).format(r.finalAmount)
+      })),
+      net_debt_total: new Intl.NumberFormat('en-IE', { style: 'currency', currency: covenants.dealMetadata.baseCurrency }).format(health.netDebt),
+      confirmation_text: "We confirm that no Default is outstanding."
     };
   }
 };

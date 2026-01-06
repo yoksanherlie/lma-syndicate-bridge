@@ -4,10 +4,9 @@ import { ShieldAlert, Activity, Info } from 'lucide-react';
 
 interface AuthProps {
   onLogin: (session: any, role: string) => void;
-  onDemo: (role: string) => void;
 }
 
-const Auth: React.FC<AuthProps> = ({ onLogin, onDemo }) => {
+const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);

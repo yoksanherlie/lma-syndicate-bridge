@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { FileText, Database, CheckCircle2, RefreshCw, Quote, Copy, Check, PauseCircle, Leaf, TrendingDown, Send } from 'lucide-react';
-import { CovenantRules, ReconciliationItem, FinancialHealth, HeadroomMetrics } from '../types';
+import { FileText, Database, CheckCircle2, FileCheck, RefreshCw, Quote, Copy, Check, PauseCircle, Leaf, TrendingDown, Send, Pencil } from 'lucide-react';
+import { CovenantRules, ReconciliationItem, FinancialHealth, HeadroomMetrics, CertificateStatus } from '../types';
 import HeadroomChart from './HeadroomChart';
 import ReconciliationTable from './ReconciliationTable';
 
@@ -10,13 +10,18 @@ interface DashboardViewProps {
     health: FinancialHealth;
     reconciliation: ReconciliationItem[];
     userRole: string;
+    status?: CertificateStatus;
+    lastGeneratedCertUrl?: string | null;
     onSave?: () => void;
+    onPrepareCertificate?: () => void;
     isSaving?: boolean;
+    isPreparing?: boolean;
     readOnly?: boolean;
+    documentUrl?: string | null;
 }
 
 const DashboardView: React.FC<DashboardViewProps> = ({ 
-    covenants, headroom, health, reconciliation, userRole, onSave, isSaving, readOnly 
+    covenants, headroom, health, reconciliation, userRole, status, lastGeneratedCertUrl, onSave, onPrepareCertificate, isSaving, isPreparing, readOnly, documentUrl
 }) => {
     
     const [copySuccess, setCopySuccess] = useState(false);
@@ -24,11 +29,8 @@ const DashboardView: React.FC<DashboardViewProps> = ({
     // Helper to get clean JSON
     const getCleanJsonString = () => {
         if (!covenants) return '';
-        const { sourceDocument, ...rest } = covenants;
-        const cleanData = sourceDocument 
-            ? { ...rest, sourceDocument: { name: sourceDocument.name, data: "<Base64 Omitted>" } } 
-            : rest;
-        return JSON.stringify(cleanData, null, 2);
+        // Covenants object no longer contains the base64 sourceDocument, so we can stringify directly
+        return JSON.stringify(covenants, null, 2);
     };
 
     const handleCopyJson = () => {
@@ -39,19 +41,11 @@ const DashboardView: React.FC<DashboardViewProps> = ({
         setTimeout(() => setCopySuccess(false), 2000);
     };
 
-    const handleViewSourcePDF = (sourceDoc: { name: string, data: string }) => {
-        try {
-           const byteCharacters = atob(sourceDoc.data);
-           const byteNumbers = new Array(byteCharacters.length);
-           for (let i = 0; i < byteCharacters.length; i++) {
-               byteNumbers[i] = byteCharacters.charCodeAt(i);
-           }
-           const byteArray = new Uint8Array(byteNumbers);
-           const blob = new Blob([byteArray], { type: 'application/pdf' });
-           const blobUrl = URL.createObjectURL(blob);
-           window.open(blobUrl, '_blank');
-        } catch (err) {
-           console.error("Error opening PDF", err);
+    const handleViewSourcePDF = () => {
+        if (documentUrl) {
+            window.open(documentUrl, '_blank');
+        } else {
+            alert("No document URL available.");
         }
      };
 
@@ -63,17 +57,16 @@ const DashboardView: React.FC<DashboardViewProps> = ({
       const interestRule = covenants?.financialCovenants?.find(c => c.name.toLowerCase().includes('interest'));
 
      // Helper for dashboard cards
-     const RuleCard = ({ label, value, unit, quote, sourceDoc }: { 
+     const RuleCard = ({ label, value, unit, quote }: { 
         label: string, 
         value: string | number, 
         unit?: string, 
-        quote?: string,
-        sourceDoc?: { name: string, data: string } | null 
+        quote?: string
       }) => {
         
         const handleViewSource = (e: React.MouseEvent) => {
             e.stopPropagation();
-            if (sourceDoc) handleViewSourcePDF(sourceDoc);
+            handleViewSourcePDF();
         };
     
         return (
@@ -81,11 +74,11 @@ const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex justify-between items-start">
               <span className="text-slate-500 text-xs font-bold uppercase">{label}</span>
               <div className="flex items-center gap-2">
-                {sourceDoc && (
+                {documentUrl && (
                     <button 
                         onClick={handleViewSource}
                         className="text-blue-500 opacity-50 hover:opacity-100 transition-opacity hover:bg-blue-50 p-1 rounded" 
-                        title={`Open Source PDF: ${sourceDoc.name}`}
+                        title="Open Source PDF"
                     >
                         <FileText size={14} />
                     </button>
@@ -114,34 +107,99 @@ const DashboardView: React.FC<DashboardViewProps> = ({
 
     return (
         <div className="space-y-6 animate-fade-in pb-8">
-            
-            {/* Top Action Bar for Borrower */}
-            {!readOnly && userRole === 'borrower' && (
-                <div className="flex justify-end bg-emerald-50 border border-emerald-100 p-4 rounded-xl items-center gap-4">
-                    <div className="text-emerald-800 text-sm font-medium mr-auto">
-                        Please review the figures below. Once confirmed, submit to the Facility Agent.
+
+            {readOnly && userRole === 'agent' && (
+                 <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center justify-end gap-3">
+                    <div className="flex items-center gap-3 mr-auto">
+                        <div className="p-2 bg-slate-200 rounded-full text-slate-600">
+                            <CheckCircle2 size={20} />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-slate-900 text-sm">Compliance Certificate Available (Read Only View)</h3>
+                            <p className="text-xs text-slate-500">The formal Form of Compliance Certificate document has been submitted by the borrower.</p>
+                        </div>
                     </div>
-                    <button 
-                        onClick={onSave}
-                        disabled={isSaving}
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg font-semibold flex items-center gap-2 shadow-sm transition-all"
+                    <a 
+                        href={lastGeneratedCertUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 shadow-sm transition-all"
                     >
-                        {isSaving ? <RefreshCw className="animate-spin" size={18}/> : <Send size={18} />}
-                        {isSaving ? 'Submitting...' : 'Confirm & Submit to Agent'}
-                    </button>
+                        <FileText size={18} />
+                        View Signed Certificate
+                    </a>
+                 </div>
+            )}
+            
+            {/* Success Banner for Generated Certificate - Visible to all if available */}
+            {lastGeneratedCertUrl && userRole === 'borrower' && (
+                <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-center justify-end shadow-sm animate-in fade-in slide-in-from-top-2 gap-4">
+                    <div className="flex items-center gap-3 mr-auto">
+                        <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
+                            <FileCheck size={20} />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-emerald-900 text-sm">Compliance Certificate Available</h3>
+                            <p className="text-xs text-emerald-700">
+                                The formal Form of Compliance Certificate document has been generated {status == 'submitted' ? 'and submitted' : 'but not yet submitted'}.
+                            </p>
+                        </div>
+                    </div>
+                    <a 
+                        href={lastGeneratedCertUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 shadow-sm transition-all"
+                    >
+                        <FileText size={18} />
+                        View Signed Certificate
+                    </a>
+                    {status !== 'submitted' && (
+                        <button 
+                            onClick={onSave}
+                            disabled={isSaving}
+                            className="bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 shadow-sm transition-all"
+                        >
+                            {isSaving ? <RefreshCw className="animate-spin" size={18}/> : <Send size={18} />}
+                            {isSaving ? 'Submitting...' : 'Confirm & Submit'}
+                        </button>
+                    )}
                 </div>
             )}
 
-            {readOnly && (
-                 <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center gap-3">
-                    <div className="p-2 bg-slate-200 rounded-full text-slate-600">
-                        <CheckCircle2 size={20} />
+            {/* Information Banner for Agents viewing Drafts */}
+            {userRole === 'agent' && status === 'draft' && (
+                <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-center gap-4 shadow-sm animate-in fade-in slide-in-from-top-2">
+                    <div className="p-2 bg-amber-100 text-amber-600 rounded-full">
+                        <Pencil size={24} />
                     </div>
                     <div>
-                        <h3 className="font-bold text-slate-900 text-sm">Read Only View</h3>
-                        <p className="text-xs text-slate-500">Viewing a submitted certificate.</p>
+                        <h3 className="font-bold text-amber-900 text-sm">Draft Review</h3>
+                        <p className="text-xs text-amber-700">
+                            Compliance certificate is still being prepared by the borrower. Meanwhile, you can view the interim data and reconciliation bridges below.
+                        </p>
                     </div>
-                 </div>
+                </div>
+            )}
+
+            {/* Top Action Bar for Borrower - Only show if in draft status */}
+            {!readOnly && userRole === 'borrower' && status === 'draft' && !lastGeneratedCertUrl && (
+                <div className="flex flex-col gap-3">
+                    <div className="flex justify-end bg-emerald-50 border border-emerald-100 p-4 rounded-xl items-center gap-4">
+                        <div className="text-emerald-800 text-sm font-medium mr-auto">
+                            Please review the figures below. Once confirmed, prepare the certificate or submit directly.
+                        </div>
+                        <button 
+                            onClick={onPrepareCertificate}
+                            disabled={isPreparing}
+                            className="bg-white hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-700 border border-emerald-200 px-6 py-2 rounded-lg font-semibold flex items-center gap-2 shadow-sm transition-all"
+                        >
+                            {isPreparing ? <RefreshCw className="animate-spin" size={18}/> : <FileText size={18} />}
+                            {isPreparing ? 'Generating...' : (lastGeneratedCertUrl ? 'Regenerate Certificate' : 'Prepare Compliance Certificate')}
+                        </button>
+                        
+                    </div>
+                </div>
             )}
             
             {/* Springing Trigger Banner */}
@@ -173,11 +231,11 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                                 }
                              </div>
                              <div className="flex items-center gap-2">
-                                {covenants.sourceDocument && (
+                                {documentUrl && (
                                     <button 
-                                        onClick={(e) => { e.stopPropagation(); handleViewSourcePDF(covenants.sourceDocument!); }}
+                                        onClick={(e) => { e.stopPropagation(); handleViewSourcePDF(); }}
                                         className="text-blue-500 opacity-50 hover:opacity-100 transition-opacity hover:bg-blue-50 p-1 rounded" 
-                                        title={`Open Source PDF: ${covenants.sourceDocument.name}`}
+                                        title="Open Source PDF"
                                     >
                                         <FileText size={14} />
                                     </button>
@@ -225,7 +283,6 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                       label="Lev. Ratio (Max)" 
                       value={headroom.leverageThreshold.toFixed(2)} 
                       unit="x"
-                      sourceDoc={covenants.sourceDocument}
                       quote={leverageRule?.sourceQuote}
                    />
                )}
@@ -236,7 +293,6 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                       label="Lev. Ratio (Max)" 
                       value={headroom.leverageThreshold.toFixed(2)} 
                       unit="x"
-                      sourceDoc={covenants.sourceDocument}
                       quote={leverageRule?.sourceQuote}
                    />
                ) : (
@@ -285,7 +341,6 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                           label="Int. Cover (Min)" 
                           value={headroom.interestThreshold.toFixed(2)} 
                           unit="x"
-                          sourceDoc={covenants.sourceDocument}
                           quote={interestRule.sourceQuote}
                        />
                    ) : (

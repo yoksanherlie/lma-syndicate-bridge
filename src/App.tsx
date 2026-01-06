@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, UploadCloud, AlertOctagon, X, FileCheck, LogOut, LayoutDashboard, FileText } from 'lucide-react';
-import { CovenantRules, SAPEntry, ReconciliationItem, FinancialHealth, HeadroomMetrics } from './types';
+import { CovenantRules, SAPEntry, ReconciliationItem, FinancialHealth, HeadroomMetrics, CertificateStatus } from './types';
 import { MOCK_SAP_DATA, SAMPLE_LMA_TEXT } from './constants';
-import { analyzeLMAAgreement } from './services/geminiService';
+import { analyzeLMAAgreement, generateComplianceCertificateData } from './services/geminiService';
 import { runReconciliation } from './services/reconciliationEngine';
 import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
-import { saveCertificate } from './services/supabaseService';
+import { saveCertificate, uploadAgreement, uploadComplianceCertificate, getAgreementFile, saveComplianceArtifact, getLatestComplianceArtifact, updateCertificateStatus } from './services/supabaseService';
+import { generateComplianceCertificatePDF } from './services/pdfService';
 
 // Components
 import Auth from './components/Auth';
@@ -27,7 +28,7 @@ interface CertificateRecord {
     borrower_name: string;
     facility_agent: string;
     period: string;
-    status: string;
+    status: CertificateStatus;
     created_at: string;
     data: {
         covenants: CovenantRules;
@@ -35,9 +36,15 @@ interface CertificateRecord {
         headroom: HeadroomMetrics;
         reconciliation: ReconciliationItem[];
     };
+    document_url?: string;
 }
 
 const App: React.FC = () => {
+  const statusStyles: Record<CertificateStatus, string> = {
+    draft: 'bg-amber-100 text-amber-800',
+    submitted: 'bg-emerald-100 text-emerald-800',
+  };
+
   // Auth State
   const [session, setSession] = useState<any>(null);
   const [userRole, setUserRole] = useState<'borrower' | 'agent' | null>(null);
@@ -45,12 +52,16 @@ const App: React.FC = () => {
   // App Flow State
   const [viewState, setViewState] = useState<AppState>(AppState.AUTH);
   const [loading, setLoading] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
   // Borrower Data State
   const [lmaText, setLmaText] = useState<string>(SAMPLE_LMA_TEXT);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [uploadedDocUrl, setUploadedDocUrl] = useState<string | null>(null);
+  const [currentCertificateId, setCurrentCertificateId] = useState<string | null>(null);
+  const [lastGeneratedCertUrl, setLastGeneratedCertUrl] = useState<string | null>(null);
   const [covenants, setCovenants] = useState<CovenantRules | null>(null);
   const [sapData, setSapData] = useState<SAPEntry[]>([]);
   const [reconciliation, setReconciliation] = useState<ReconciliationItem[]>([]);
@@ -112,6 +123,7 @@ const App: React.FC = () => {
   const handleLogin = (session: any, role: string) => {
       setSession(session);
       setUserRole(role as 'borrower' | 'agent');
+      setLastGeneratedCertUrl(null);
       if (role === 'agent') {
         fetchCertificates();
         setViewState(AppState.AGENT_LIST);
@@ -130,38 +142,7 @@ const App: React.FC = () => {
       // Reset State
       setCovenants(null);
       setCertificates([]);
-  };
-
-  const handleDemo = (role: string) => {
-      // Mock Login for Demo
-      setSession({ 
-          user: { 
-              id: 'demo-user', 
-              email: 'demo@example.com',
-              user_metadata: { role }
-          } 
-      });
-      setUserRole(role as 'borrower' | 'agent');
-      if (role === 'agent') {
-        // Mock Certificates
-        setCertificates([{
-            id: 'demo-cert-1',
-            borrower_name: 'Nomad Foods Limited',
-            period: 'Q1 2025',
-            status: 'submitted',
-            created_at: new Date().toISOString(),
-            data: { 
-                // We'll populate this if clicked, for now simple placeholder
-                covenants: {} as any, 
-                health: {} as any, 
-                headroom: {} as any, 
-                reconciliation: [] 
-            }
-        }]);
-        setViewState(AppState.AGENT_LIST);
-      } else {
-        setViewState(AppState.BORROWER_UPLOAD);
-      }
+      setUploadedDocUrl(null);
   };
 
   // AGENT FETCHING
@@ -188,10 +169,20 @@ const App: React.FC = () => {
       setLoading(false);
   };
 
-  const handleSelectCertificate = (cert: CertificateRecord) => {
+  const handleSelectCertificate = async (cert: CertificateRecord) => {
       // In a real app we might fetch the specific big JSON blob here if we didn't fetch it in the list
       // For now assuming we have it
       setSelectedCertificate(cert);
+      setCurrentCertificateId(cert.id);
+      setLastGeneratedCertUrl(null);
+
+      // Check if there are any generated compliance certificates for this record
+      if (isSupabaseConfigured()) {
+          const latestUrl = await getLatestComplianceArtifact(cert.id);
+          if (latestUrl) {
+              setLastGeneratedCertUrl(latestUrl);
+          }
+      }
 
       // If demo mode and data is empty, we might need to regenerate/mock it, 
       // but for simplicity let's assume demo users go through borrower flow first or we use the MOCK constants.
@@ -237,9 +228,25 @@ const App: React.FC = () => {
   const handleProcessAgreement = async () => {
     setViewState(AppState.BORROWER_PROCESSING);
     setProcessingStep('Initializing Ingestion Agent...');
+    setLastGeneratedCertUrl(null);
     
     try {
-      // Step 1: Gemini Analysis
+      // Step 1: Upload to Cloud Storage (if enabled)
+      let docUrl = null;
+      if (pdfFile && isSupabaseConfigured()) {
+        setProcessingStep('Uploading Agreement to Secure Storage...');
+        try {
+            docUrl = await uploadAgreement(pdfFile, session.user.id);
+            setUploadedDocUrl(docUrl);
+        } catch (uploadErr) {
+            console.error("Upload failed", uploadErr);
+            // Proceed even if upload fails? Or stop? 
+            // For now, let's proceed but warn.
+            setProcessingStep('Upload failed. Proceeding with analysis...');
+        }
+      }
+
+      // Step 2: Gemini Analysis
       setProcessingStep('Gemini Agent analyzing Agreement...');
       let input: string | { data: string, mimeType: string } = lmaText;
       let currentPdfData: { name: string, data: string } | null = null;
@@ -253,16 +260,17 @@ const App: React.FC = () => {
       }
 
       const extractedRules = await analyzeLMAAgreement(input);
-      if (currentPdfData) extractedRules.sourceDocument = currentPdfData;
+      // We no longer attach sourceDocument (base64) to the rules object 
+      // as we are using the uploadedDocUrl now.
 
       setCovenants(extractedRules);
 
-      // Step 2: ERP Connection
+      // Step 3: ERP Connection
       setProcessingStep('Connecting to SAP ERP (Mock Interface)...');
       await new Promise(resolve => setTimeout(resolve, 1500)); 
       setSapData(MOCK_SAP_DATA);
 
-      // Step 3: Reconciliation
+      // Step 4: Reconciliation
       setProcessingStep('Running Reconciliation Engine...');
       const result = runReconciliation(MOCK_SAP_DATA, extractedRules);
       
@@ -272,7 +280,7 @@ const App: React.FC = () => {
 
       // Save the extracted data to Supabase
       if (isSupabaseConfigured()) {
-        await saveCertificate(
+        const savedRecord = await saveCertificate(
           session.user.id,
           extractedRules.dealMetadata.borrower || 'Unknown Borrower',
           extractedRules.dealMetadata.facilityAgent || 'Unknown Agent',
@@ -280,8 +288,11 @@ const App: React.FC = () => {
           extractedRules,
           result.health,
           result.headroom,
-          result.reconciliation
+          result.reconciliation,
+          docUrl,
+          'draft'
         );
+        if (savedRecord) setCurrentCertificateId(savedRecord.id);
       }
 
       setProcessingStep('Complete.');
@@ -294,34 +305,94 @@ const App: React.FC = () => {
     }
   };
 
+  const handlePrepareCertificate = async () => {
+    if (!covenants || !health || !headroom) {
+      setError("Incomplete data to generate certificate.");
+      return;
+    }
+
+    setIsPreparing(true);
+    setLoading(true);
+    setProcessingStep('Retrieving original Agreement PDF...');
+    
+    try {
+      let agreementInput: string | { data: string, mimeType: string } = lmaText;
+      
+      if (uploadedDocUrl) {
+        const agreementBlob = await getAgreementFile(uploadedDocUrl);
+        const reader = new FileReader();
+        const base64Promise = new Promise<string>((resolve) => {
+          reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+          reader.readAsDataURL(agreementBlob);
+        });
+        const base64Data = await base64Promise;
+        agreementInput = { data: base64Data, mimeType: 'application/pdf' };
+      }
+
+      setProcessingStep('Gemini Agent generating Schedule 7 JSON data...');
+      const certData = await generateComplianceCertificateData(
+        agreementInput,
+        health,
+        headroom,
+        reconciliation,
+        covenants,
+        'Q1 2025'
+      );
+
+      setProcessingStep('Generating Compliance Certificate PDF...');
+      const blob = generateComplianceCertificatePDF(certData);
+      
+      if (!isSupabaseConfigured()) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `compliance_certificate_${Date.now()}.pdf`;
+        a.click();
+        return;
+      }
+
+      const docUrl = await uploadComplianceCertificate(blob, session.user.id);
+      
+      // Store the artifact in the child table if we have a certificate record
+      if (currentCertificateId && isSupabaseConfigured()) {
+        await saveComplianceArtifact(currentCertificateId, docUrl, 'compliance_certificate');
+      }
+      
+      setLastGeneratedCertUrl(docUrl);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to generate or upload compliance certificate.");
+    } finally {
+      setLoading(false);
+      setIsPreparing(false);
+    }
+  };
+
   const handleSubmitCertificate = async () => {
-    if (!session || !covenants || !health || !headroom) return;
+    if (!session || !currentCertificateId) return;
     setLoading(true);
     
     try {
       if (isSupabaseConfigured()) {
-        await saveCertificate(
-          session.user.id,
-          covenants.dealMetadata.borrower || 'Unknown Borrower',
-          covenants.dealMetadata.facilityAgent || 'Unknown Agent',
-          'Q1 2025', // Should be dynamic
-          covenants,
-          health,
-          headroom,
-          reconciliation
-        );
+        await updateCertificateStatus(currentCertificateId, 'submitted');
+        
         alert("Certificate Submitted Successfully to Facility Agent.");
-        // Reset flow
+        
+        // Reset flow and go back to list
         setCovenants(null);
-        setViewState(AppState.BORROWER_UPLOAD);
+        setUploadedDocUrl(null);
+        setCurrentCertificateId(null);
+        setLastGeneratedCertUrl(null);
+        setViewState(AppState.BORROWER_CERTIFICATE_LIST);
       } else {
         // Demo persistence
-        alert("Demo Mode: Certificate 'Submitted'. (Data not persisted)");
+        alert("Demo Mode: Certificate Status marked as 'Submitted'. (Data not persisted)");
         setCovenants(null);
+        setUploadedDocUrl(null);
         setViewState(AppState.BORROWER_UPLOAD);
       }
     } catch (error) {
-      setError("Failed to save to database: " + error.message);
+      setError("Failed to submit certificate: " + error.message);
     } finally {
       setLoading(false);
     }
@@ -330,7 +401,7 @@ const App: React.FC = () => {
 
   // RENDER HELPERS
   if (viewState === AppState.AUTH) {
-      return <Auth onLogin={handleLogin} onDemo={handleDemo} />;
+      return <Auth onLogin={handleLogin} />;
   }
 
   return (
@@ -356,14 +427,14 @@ const App: React.FC = () => {
                   className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.BORROWER_UPLOAD ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
               >
                   <UploadCloud size={20} />
-                  <span className="font-medium">New Certificate</span>
+                  <span className="font-medium">New Agreement</span>
               </button>
               <button
                   onClick={() => { fetchCertificates(); setViewState(AppState.BORROWER_CERTIFICATE_LIST); }}
                   className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.BORROWER_CERTIFICATE_LIST ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
               >
                   <LayoutDashboard size={20} />
-                  <span className="font-medium">My Certificates</span>
+                  <span className="font-medium">Loan Agreements</span>
               </button>
             </>
           )}
@@ -374,7 +445,7 @@ const App: React.FC = () => {
                 className={`flex items-center gap-3 px-4 py-3 w-full rounded-lg transition-all ${viewState === AppState.AGENT_LIST ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'text-slate-500 hover:bg-slate-50'}`}
              >
                 <LayoutDashboard size={20} />
-                <span className="font-medium">Certificates</span>
+                <span className="font-medium">Loan Agreements</span>
              </button>
           )}
         </nav>
@@ -396,9 +467,9 @@ const App: React.FC = () => {
             <h1 className="text-2xl font-bold text-slate-900">
                {viewState === AppState.BORROWER_UPLOAD && 'Compliance Certificate Setup'}
                {viewState === AppState.BORROWER_DASHBOARD && 'Review & Submit'}
-               {viewState === AppState.BORROWER_CERTIFICATE_LIST && 'My Submitted Certificates'}
-               {viewState === AppState.AGENT_LIST && 'Submitted Certificates'}
-               {viewState === AppState.VIEW_CERTIFICATE && 'Certificate Review'}
+               {viewState === AppState.BORROWER_CERTIFICATE_LIST && 'My Loan Agreements'}
+               {viewState === AppState.AGENT_LIST && 'Loan Agreements'}
+               {viewState === AppState.VIEW_CERTIFICATE && 'Loan Agreement'}
             </h1>
             <p className="text-slate-500">
                {userRole === 'borrower' ? 'Prepare and submit your quarterly compliance data.' : 'Review incoming certificates from borrowers.'}
@@ -453,7 +524,9 @@ const App: React.FC = () => {
                                         <td className="px-6 py-4">{cert.facility_agent || '-'}</td>
                                         <td className="px-6 py-4">{cert.period}</td>
                                         <td className="px-6 py-4">
-                                            <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold uppercase">{cert.status}</span>
+                                            <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${statusStyles[cert.status] || 'bg-slate-100 text-slate-800'}`}>
+                                                {cert.status}
+                                            </span>
                                         </td>
                                         <td className="px-6 py-4">{new Date(cert.created_at).toLocaleDateString()}</td>
                                         <td className="px-6 py-4 text-right">
@@ -507,7 +580,9 @@ const App: React.FC = () => {
                                         <td className="px-6 py-4">{cert.facility_agent || '-'}</td>
                                         <td className="px-6 py-4">{cert.period}</td>
                                         <td className="px-6 py-4">
-                                            <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold uppercase">{cert.status}</span>
+                                            <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${statusStyles[cert.status] || 'bg-slate-100 text-slate-800'}`}>
+                                                {cert.status}
+                                            </span>
                                         </td>
                                         <td className="px-6 py-4">{new Date(cert.created_at).toLocaleDateString()}</td>
                                         <td className="px-6 py-4 text-right">
@@ -610,9 +685,14 @@ const App: React.FC = () => {
                 health={health}
                 reconciliation={reconciliation}
                 userRole={userRole || 'borrower'}
+                status={viewState === AppState.BORROWER_DASHBOARD ? 'draft' : selectedCertificate?.status}
+                lastGeneratedCertUrl={lastGeneratedCertUrl}
                 onSave={handleSubmitCertificate}
+                onPrepareCertificate={handlePrepareCertificate}
                 isSaving={loading}
-                readOnly={viewState === AppState.VIEW_CERTIFICATE}
+                isPreparing={isPreparing}
+                readOnly={viewState === AppState.VIEW_CERTIFICATE && selectedCertificate?.status === 'submitted'}
+                documentUrl={uploadedDocUrl || selectedCertificate?.document_url}
             />
         )}
       </main>
