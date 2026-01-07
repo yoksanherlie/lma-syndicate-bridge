@@ -336,11 +336,11 @@ const App: React.FC = () => {
         headroom,
         reconciliation,
         covenants,
-        'Q1 2025'
+        'Q1 2026'
       );
 
       setProcessingStep('Generating Compliance Certificate PDF...');
-      const blob = generateComplianceCertificatePDF(certData);
+      const blob = await generateComplianceCertificatePDF(certData);
       
       if (!isSupabaseConfigured()) {
         const url = URL.createObjectURL(blob);
