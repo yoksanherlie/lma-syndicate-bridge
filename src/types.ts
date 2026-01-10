@@ -74,6 +74,18 @@ export interface HeadroomMetrics {
   };
 }
 
+export interface Recommendation {
+  id: string;
+  title: string;
+  description: string;
+  actionType: 'Reduction' | 'Optimization' | 'Strategic';
+  potentialSavings?: string;
+  // Tracking Metadata
+  conditionMetric?: 'Leverage Ratio' | 'Interest Cover' | 'EBITDA' | 'Net Debt';
+  conditionOperator?: '<' | '>' | '<=' | '>=';
+  conditionThreshold?: number;
+}
+
 // --- NEW STRUCTURES MATCHING GEMINI SCHEMA ---
 
 export interface EBITDAAddBack {
@@ -92,6 +104,12 @@ export interface FinancialCovenantRule {
   sourceQuote?: string; // Evidence text from document
 }
 
+export interface Facility {
+  name: string; // e.g. "Term Facility A"
+  amount: number;
+  currency: string;
+}
+
 export interface CovenantRules {
   dealMetadata: {
     borrower?: string;
@@ -99,6 +117,7 @@ export interface CovenantRules {
     agreementDate?: string;
     baseCurrency: string;
   };
+  facilities?: Facility[];
   covenantTrigger?: {
     isSpringing: boolean;
     triggerMetric?: string;
@@ -121,6 +140,7 @@ export interface CovenantRules {
       unit?: string;
     }>;
   };
+  recommendations?: Recommendation[];
 }
 
 export interface ComplianceCertificateData {

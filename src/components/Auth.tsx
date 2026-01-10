@@ -60,7 +60,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-      <div className="bg-white border border-slate-200 p-8 rounded-xl shadow-xl max-w-md w-full">
+      <div className="bg-white border border-slate-200 p-8 rounded-xl shadow-xl max-w-lg w-full">
         <div className="flex flex-col items-center mb-6">
             <div className="p-3 bg-emerald-50 rounded-full text-emerald-600 mb-3">
                 <Activity size={32} />
@@ -169,7 +169,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                         <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                         Borrower Account
                     </p>
-                    <p className="text-slate-500"><span className="font-medium">Email:</span> borrower_demo@bridge.com</p>
+                    <p className="text-slate-500"><span className="font-medium">Email:</span> borrower_demo@bridge.com / borrower_demo2@bridge.com</p>
                     <p className="text-slate-500"><span className="font-medium">Password:</span> testdemo</p>
                 </div>
 

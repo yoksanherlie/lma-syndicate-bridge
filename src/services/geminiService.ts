@@ -12,14 +12,21 @@ export const analyzeLMAAgreement = async (input: string | { data: string, mimeTy
   const promptText = `
     **Role:** You are an expert LMA (Loan Market Association) Legal Counsel and Credit Analyst. Your task is to parse the attached Facility Agreement and extract the precise "Financial Covenant" rules into a structured JSON format for an ERP reconciliation engine.
 
-**Instructions:**
-1. **Locate Clause 26 (Financial Covenants):** Identify the primary ratio (e.g., Consolidated Leverage Ratio), the threshold value, and the "Test Condition" (the springing trigger).
-2. **Locate Schedule 21 (Certain Defined Terms):** Extract the full logic for "Consolidated EBITDA" and "Consolidated Indebtedness."
-3. **Identify Total RFC:** Identify the total amount of Revolving Facility Commitments by all lenders
-3. **Identify Add-backs:** Specifically list every item permitted to be added back to Net Income to reach Adjusted EBITDA. 
-4. **Locate Clause 14.12 (Sustainability):** Extract KPI targets and margin adjustment values.
-5. **Extract Evidence:** For every extracted rule (Covenants, Triggers), include a \`sourceQuote\` containing the exact text snippet from the document that justifies the extracted value.
-6. **Output only valid JSON.**
+    **Instructions:**
+    1. **Locate Clause 26 (Financial Covenants):** Identify the primary ratio (e.g., Consolidated Leverage Ratio), the threshold value, and the "Test Condition" (the springing trigger).
+    2. **Locate Schedule 21 (Certain Defined Terms):** Extract the full logic for "Consolidated EBITDA" and "Consolidated Indebtedness."
+    3. **Identify Facilities:** Extract the list of all Facilities (Term Loans, RCFs) and their specific Commitment Amounts (Principal) from the "The Facilities" clause or definitions.
+    4. **Identify Total RFC:** Identify the total amount of Revolving Facility Commitments by all lenders
+    5. **Identify Add-backs:** Specifically list every item permitted to be added back to Net Income to reach Adjusted EBITDA. 
+    6. **Locate Clause 14.12 (Sustainability):** Extract KPI targets and margin adjustment values.
+    7. **Identify Opportunities:** Look for specific clauses that offer financial flexibility or savings, such as:
+    - Margin step-downs (based on Leverage or Ratings).
+    - Equity Cure rights (to cure financial covenant breaches).
+    - Permitted Baskets that could be optimized.
+    - "Holiday" periods or testing waivers.
+    - **CRITICAL:** If an opportunity is triggered by a specific numeric threshold (e.g. "Margin reduces if Leverage < 3.00x"), extract the \`conditionMetric\` (Leverage Ratio) and \`conditionThreshold\` (3.00) so we can track it automatically.
+6. **Extract Evidence:** For every extracted rule (Covenants, Triggers), include a \`sourceQuote\` containing the exact text snippet from the document that justifies the extracted value.
+7. **Output only valid JSON.**
 
 **Required JSON Structure:**
 ${jsonBlockStart}
@@ -30,6 +37,10 @@ ${jsonBlockStart}
     "agreement_date": "YYYY-MM-DD",
     "currency": "string"
   },
+  "facilities": [
+    { "name": "Term Facility A", "amount": 350000000, "currency": "EUR" },
+    { "name": "Revolving Facility", "amount": 50000000, "currency": "EUR" }
+  ],
   "covenant_trigger": {
     "name": "Test Condition",
     "calculation": "Total RCF Drawings / Total RCF Commitments",
@@ -68,7 +79,19 @@ ${jsonBlockStart}
     "kpis": [
       { "id": "KPI_1", "target": 0.95, "description": "Sustainable Farming" }
     ]
-  }
+  },
+  "recommendations": [
+    {
+      "id": "rec_margin_stepdown",
+      "title": "Margin Reduction",
+      "description": "If Leverage Ratio drops below 3.00:1, margin reduces by 0.50%.",
+      "actionType": "Strategic",
+      "potentialSavings": "0.50% Margin",
+      "conditionMetric": "Leverage Ratio",
+      "conditionOperator": "<",
+      "conditionThreshold": 3.00
+    }
+  ]
 }
 ${jsonBlockEnd}
 
@@ -109,6 +132,20 @@ ${jsonBlockEnd}
                 baseCurrency: { type: Type.STRING, description: "e.g., EUR, USD, GBP" }
               },
               required: ["borrower", "baseCurrency"]
+            },
+            facilities: {
+              type: Type.ARRAY,
+              description: "List of all credit facilities and their commitment amounts",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING, description: "e.g. Term Facility A" },
+                  amount: { type: Type.NUMBER, description: "Commitment Amount in base currency" },
+                  currency: { type: Type.STRING }
+                },
+                required: ["name", "amount", "currency"]
+              },
+              nullable: true
             },
             covenantTrigger: {
               type: Type.OBJECT,
@@ -183,6 +220,25 @@ ${jsonBlockEnd}
                 }
               },
               nullable: true
+            },
+            recommendations: {
+              type: Type.ARRAY,
+              description: "Strategic opportunities or operational flexibilities extracted from the text (e.g. margin step-downs, cure rights)",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  actionType: { type: Type.STRING, enum: ["Reduction", "Optimization", "Strategic"] },
+                  potentialSavings: { type: Type.STRING, nullable: true },
+                  conditionMetric: { type: Type.STRING, enum: ["Leverage Ratio", "Interest Cover"], nullable: true },
+                  conditionThreshold: { type: Type.NUMBER, nullable: true },
+                  conditionOperator: { type: Type.STRING, enum: ["<", ">", "<=", ">="], nullable: true }
+                },
+                required: ["id", "title", "description", "actionType"]
+              },
+              nullable: true
             }
           },
           required: ["dealMetadata", "financialCovenants", "ebitdaRules"]
@@ -208,6 +264,10 @@ ${jsonBlockEnd}
         agreementDate: "2024-01-01",
         baseCurrency: "EUR"
       },
+      facilities: [
+          { name: "Term Facility A", amount: 200000000, currency: "EUR" },
+          { name: "Revolving Facility", amount: 50000000, currency: "EUR" }
+      ],
       financialCovenants: [
         { 
             name: "Leverage Ratio", 
@@ -240,7 +300,25 @@ ${jsonBlockEnd}
            { item: "Restructuring Costs", legalLogic: "Exceptional items", cap: "20% of EBITDA" }
         ],
         exclusions: ["Unrealized FX Gains"]
-      }
+      },
+      recommendations: [
+         {
+             id: 'rec_demo_1',
+             title: 'Equity Cure Right',
+             description: 'Borrower may cure a Financial Covenant breach by injecting new equity within 20 days of delivery of Compliance Certificate.',
+             actionType: 'Strategic'
+         },
+         {
+             id: 'rec_demo_2',
+             title: 'Margin Step-Down',
+             description: 'If Leverage Ratio is below 3.50x, the Margin shall be reduced by 0.25% per annum.',
+             actionType: 'Optimization',
+             potentialSavings: '0.25% Margin',
+             conditionMetric: 'Leverage Ratio',
+             conditionOperator: '<',
+             conditionThreshold: 3.50
+         }
+      ]
     };
   }
 };

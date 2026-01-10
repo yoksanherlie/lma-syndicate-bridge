@@ -284,7 +284,7 @@ const App: React.FC = () => {
           session.user.id,
           extractedRules.dealMetadata.borrower || 'Unknown Borrower',
           extractedRules.dealMetadata.facilityAgent || 'Unknown Agent',
-          'Q1 2025', // Should be dynamic
+          'Q1 2026', // Should be dynamic
           extractedRules,
           result.health,
           result.headroom,
@@ -621,7 +621,7 @@ const App: React.FC = () => {
                   <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors group">
                     <div className="flex flex-col items-center justify-center pt-5 pb-6">
                       <UploadCloud className="w-10 h-10 mb-3 text-slate-400 group-hover:text-emerald-600 transition-colors" />
-                      <p className="mb-2 text-sm text-slate-500"><span className="font-semibold">Click to upload</span> or drag and drop PDF</p>
+                      <p className="mb-2 text-sm text-slate-500"><span className="font-semibold">Click</span> to upload LMA-style Loan Agreement PDF file</p>
                     </div>
                     <input type="file" className="hidden" accept=".pdf" onChange={handleFileChange} />
                   </label>
@@ -640,7 +640,7 @@ const App: React.FC = () => {
                   </div>
                 )}
                 
-                <div className="flex items-center gap-4">
+                {/* <div className="flex items-center gap-4">
                     <div className="h-px bg-slate-200 flex-1"></div>
                     <span className="text-slate-400 text-xs uppercase font-bold">Or Paste Text</span>
                     <div className="h-px bg-slate-200 flex-1"></div>
@@ -652,7 +652,7 @@ const App: React.FC = () => {
                   onChange={(e) => setLmaText(e.target.value)}
                   placeholder={pdfFile ? "File selected." : "Paste agreement text..."}
                   disabled={!!pdfFile}
-                />
+                /> */}
               </div>
 
               <div className="mt-8 flex justify-end">

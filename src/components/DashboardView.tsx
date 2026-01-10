@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { FileText, Database, CheckCircle2, FileCheck, RefreshCw, Quote, Copy, Check, PauseCircle, Leaf, TrendingDown, Send, Pencil } from 'lucide-react';
-import { CovenantRules, ReconciliationItem, FinancialHealth, HeadroomMetrics, CertificateStatus } from '../types';
+import { FileText, Database, CheckCircle2, FileCheck, RefreshCw, Quote, Copy, Check, PauseCircle, Leaf, TrendingDown, Send, Pencil, Lightbulb, Trophy, CircleX } from 'lucide-react';
+import { CovenantRules, ReconciliationItem, FinancialHealth, HeadroomMetrics, CertificateStatus, Recommendation } from '../types';
 import HeadroomChart from './HeadroomChart';
 import ReconciliationTable from './ReconciliationTable';
 
@@ -25,6 +25,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
     
     const [copySuccess, setCopySuccess] = useState(false);
+    const [selectedRec, setSelectedRec] = useState<Recommendation | null>(null);
     
     // Helper to get clean JSON
     const getCleanJsonString = () => {
@@ -49,12 +50,250 @@ const DashboardView: React.FC<DashboardViewProps> = ({
         }
      };
 
-     const hasInterestCovenant = covenants?.financialCovenants?.some(c => 
+     // Savings Calculation Helper
+     const calculateSavings = (rec: Recommendation) => {
+        let savingsText = rec.potentialSavings || '';
+        let percentage = 0;
+        let isPercentage = false;
+        
+        // Try to extract percentage
+        const match = savingsText.match(/(\d+\.?\d*)%/);
+        if (match) {
+            percentage = parseFloat(match[1]);
+            isPercentage = true;
+        }
+
+        const facilities = covenants.facilities || [];
+        const hasGranularData = facilities.length > 0;
+
+        let totalPrincipal = 0;
+        let totalSaving = 0;
+        let breakdown: { name: string, amount: number, saving: number, formattedAmount: string, formattedSaving: string }[] = [];
+
+        if (hasGranularData) {
+            breakdown = facilities.map(f => {
+                const saving = isPercentage ? f.amount * (percentage / 100) : 0;
+                return {
+                    name: f.name,
+                    amount: f.amount,
+                    saving: saving,
+                    formattedAmount: new Intl.NumberFormat('en-IE', { style: 'currency', currency: f.currency, maximumFractionDigits: 3, notation: "compact" }).format(f.amount),
+                    formattedSaving: new Intl.NumberFormat('en-IE', { style: 'currency', currency: f.currency, maximumFractionDigits: 0 }).format(saving)
+                };
+            });
+            totalPrincipal = facilities.reduce((sum, f) => sum + f.amount, 0);
+            totalSaving = breakdown.reduce((sum, b) => sum + b.saving, 0);
+        } else {
+            // Fallback to Gross Debt
+            totalPrincipal = health.grossDebt;
+            totalSaving = isPercentage ? totalPrincipal * (percentage / 100) : 0;
+        }
+
+        return {
+            isPercentage,
+            percentage,
+            hasGranularData,
+            breakdown,
+            formattedTotalPrincipal: new Intl.NumberFormat('en-IE', { style: 'currency', currency: covenants.dealMetadata.baseCurrency || 'EUR', maximumFractionDigits: 3, notation: "compact" }).format(totalPrincipal),
+            formattedTotalSaving: new Intl.NumberFormat('en-IE', { style: 'currency', currency: covenants.dealMetadata.baseCurrency || 'EUR', maximumFractionDigits: 0 }).format(totalSaving)
+        };
+     };
+
+     const Modal = () => {
+        if (!selectedRec) return null;
+        const calc = calculateSavings(selectedRec);
+
+        return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setSelectedRec(null)}>
+                <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-200 m-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-start">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
+                                <Lightbulb size={20} />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900">{selectedRec.title}</h3>
+                                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{selectedRec.actionType} Opportunity</span>
+                            </div>
+                        </div>
+                        <button onClick={() => setSelectedRec(null)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                            <CircleX size={24} /> 
+                        </button>
+                    </div>
+                    
+                    <div className="p-6 space-y-6">
+                        <div className="bg-slate-50 p-4 rounded-xl text-sm text-slate-600 leading-relaxed border border-slate-100">
+                            {selectedRec.description}
+                        </div>
+
+                        {calc.isPercentage ? (
+                            <div className="space-y-4">
+                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                                    <Database size={12} /> Projected Impact Analysis
+                                </h4>
+                                
+                                {calc.hasGranularData ? (
+                                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+                                                <tr>
+                                                    <th className="px-4 py-3">Facility</th>
+                                                    <th className="px-4 py-3 text-right">Commitment</th>
+                                                    <th className="px-4 py-3 text-right text-emerald-600">Saving</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {calc.breakdown.map((item, idx) => (
+                                                    <tr key={idx} className="hover:bg-slate-50">
+                                                        <td className="px-4 py-3 font-medium text-slate-700">{item.name}</td>
+                                                        <td className="px-4 py-3 text-right text-slate-500 font-mono">{item.formattedAmount}</td>
+                                                        <td className="px-4 py-3 text-right text-emerald-600 font-mono font-bold">+{item.formattedSaving}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                            <tfoot className="bg-slate-50 border-t border-slate-200">
+                                                <tr>
+                                                    <td className="px-4 py-3 font-bold text-slate-900">Total</td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">{calc.formattedTotalPrincipal}</td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-emerald-600">{calc.formattedTotalSaving}</td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="p-3 border border-slate-200 rounded-lg">
+                                            <div className="text-xs text-slate-500 mb-1">Total Debt</div>
+                                            <div className="font-mono font-semibold text-slate-900">{calc.formattedTotalPrincipal}</div>
+                                        </div>
+                                        <div className="p-3 border border-slate-200 rounded-lg">
+                                            <div className="text-xs text-slate-500 mb-1">Rate Reduction</div>
+                                            <div className="font-mono font-semibold text-emerald-600">-{calc.percentage}%</div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="relative p-4 bg-emerald-50 border border-emerald-100 rounded-xl overflow-hidden mt-2">
+                                    <div className="absolute top-0 right-0 p-4 opacity-10">
+                                        <TrendingDown size={80} className="text-emerald-600" />
+                                    </div>
+                                    <div className="relative z-10">
+                                        <div className="text-sm text-emerald-800 font-medium mb-1">Est. Total Annual Savings</div>
+                                        <div className="text-3xl font-bold text-emerald-700 tracking-tight">{calc.formattedTotalSaving}</div>
+                                        <div className="text-[14px] text-emerald-600 mt-2 font-mono opacity-80">
+                                            Based on {calc.percentage}% reduction across all facilities.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl flex items-start gap-3">
+                                <TrendingDown className="text-indigo-600 mt-1" size={20} />
+                                <div>
+                                    <h4 className="text-indigo-900 font-bold text-sm">Potential Benefit</h4>
+                                    <p className="text-xs text-indigo-700 mt-1">
+                                        {selectedRec.potentialSavings || "Impact is variable based on execution."}
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+                        <button 
+                            onClick={() => setSelectedRec(null)}
+                            className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+     };
+
+      const hasInterestCovenant = covenants?.financialCovenants?.some(c => 
         c.name.toLowerCase().includes('interest')
       );
       
       const leverageRule = covenants?.financialCovenants?.find(c => c.name.toLowerCase().includes('leverage'));
       const interestRule = covenants?.financialCovenants?.find(c => c.name.toLowerCase().includes('interest'));
+
+      const getRecommendations = (): (Recommendation & { status?: string, progress?: number })[] => {
+        // Start with recommendations extracted directly from the PDF (e.g. Cure Rights, Margin Step-downs)
+        const extractedRecs = covenants.recommendations ? [...covenants.recommendations] : [];
+        
+        const processedRecs = extractedRecs.map(rec => {
+             if (rec.conditionMetric === 'Leverage Ratio' && rec.conditionThreshold !== null && rec.conditionThreshold !== undefined) {
+                 const current = headroom.leverageRatio;
+                 const target = rec.conditionThreshold;
+                 const operator = rec.conditionOperator || '<';
+                 
+                 let isMet = false;
+                 if (operator === '<' || operator === '<=') isMet = current <= target;
+                 else if (operator === '>' || operator === '>=') isMet = current >= target;
+                 
+                 return {
+                     ...rec,
+                     status: isMet ? 'Achieved' : 'Tracking',
+                     progress: operator === '<' || operator === '<=' 
+                        ? Math.max(0, current - target) // Distance to go (lower is better)
+                        : Math.max(0, target - current) // Distance to go (higher is better)
+                 };
+             }
+             return rec;
+        });
+
+        const recs: (Recommendation & { status?: string, progress?: number })[] = [...processedRecs];
+        
+        // Logic 1: Leverage Warning (Dynamic)
+        if (headroom.leverageRatio > headroom.leverageThreshold * 0.85 && headroom.status !== 'Breach') {
+             recs.push({
+                 id: 'rec_lev_dynamic',
+                 title: 'Reduce RCF Utilization',
+                 description: `Leverage (${headroom.leverageRatio.toFixed(2)}x) is approaching the limit (${headroom.leverageThreshold.toFixed(2)}x). Repaying €2M of RCF would improve headroom by approx 0.5x.`,
+                 actionType: 'Reduction',
+                 potentialSavings: '€45k interest',
+                 status: 'Action Required'
+             });
+        }
+        
+        // Logic 2: Sustainability (Dynamic check if not already covered)
+        if (covenants.sustainabilityKpis?.stepDownMarginMax && !recs.some(r => r.id.includes('margin'))) {
+             // Check if we have KPI data to track status - assuming not for now, just static
+             recs.push({
+                 id: 'rec_esg_dynamic',
+                 title: 'Target Sustainability KPI',
+                 description: 'Meeting the Carbon Intensity target will trigger a margin reduction.',
+                 actionType: 'Strategic',
+                 potentialSavings: `${(covenants.sustainabilityKpis.stepDownMarginMax)}% margin`
+             });
+        }
+        
+        // Logic 3: Cash Management (Dynamic)
+        if (health.cashAtBank > 5000000 && headroom.leverageRatio > 2.0) {
+             recs.push({
+                 id: 'rec_cash_dynamic',
+                 title: 'Sweep Excess Cash',
+                 description: 'Use excess cash on balance sheet to prepay RCF and reduce interest expense.',
+                 actionType: 'Optimization',
+                 potentialSavings: 'Variable',
+                 status: 'Opportunity'
+             });
+        }
+
+        // Fallback if absolutely nothing
+        if (recs.length === 0) {
+             recs.push({
+                 id: 'rec_gen',
+                 title: 'Optimize Working Capital',
+                 description: 'Improving receivables collection by 5 days could increase cash for debt service.',
+                 actionType: 'Optimization'
+             });
+        }
+        
+        return recs;
+    };
 
      // Helper for dashboard cards
      const RuleCard = ({ label, value, unit, quote }: { 
@@ -106,6 +345,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
       )};
 
     return (
+        <>
         <div className="space-y-6 animate-fade-in pb-8">
 
             {readOnly && userRole === 'agent' && (
@@ -374,7 +614,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
              {/* Main Visuals Row */}
-             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+             <div className={`grid grid-cols-1 md:grid-cols-2 ${hasInterestCovenant ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-6`}>
                 <HeadroomChart
                   current={headroom.leverageRatio}
                   max={headroom.leverageThreshold}
@@ -388,6 +628,55 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                     inverse
                   />
                 )}
+               
+               {userRole !== 'agent' && (
+               <div className="bg-white p-5 rounded-xl border border-slate-200 flex flex-col relative shadow-sm overflow-hidden">
+                  <div className="flex items-center gap-2 mb-3">
+                                              <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                                                  <Lightbulb size={16} />
+                                              </div>
+                                              <span className="text-slate-500 text-xs font-bold uppercase">Opportunities</span>
+                                          </div>
+                                          <div className="flex-1 flex flex-col gap-3 overflow-y-auto overflow-x-hidden max-h-[160px] pr-1 scrollbar-thin">
+                                              {getRecommendations().map(rec => (
+                                                  <div key={rec.id} onClick={() => setSelectedRec(rec)} className="group cursor-pointer relative hover:bg-slate-50 p-2 -mx-2 rounded-lg transition-colors">                            <div className="flex justify-between items-start">
+                                <h4 className="text-xs font-bold text-slate-800 group-hover:text-indigo-600 transition-colors pr-8">{rec.title}</h4>
+                                {rec.status === 'Achieved' ? (
+                                    <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold flex items-center gap-1">
+                                        <Trophy size={10} /> Active
+                                    </span>
+                                ) : (
+                                    rec.potentialSavings && <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">{rec.potentialSavings}</span>
+                                )}
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-1 leading-relaxed line-clamp-3">{rec.description}</p>
+                            
+                            {/* Tracking Progress Bar */}
+                            {rec.status === 'Tracking' && rec.conditionThreshold !== undefined && (
+                                <div className="mt-2">
+                                    <div className="flex justify-between text-[9px] text-slate-400 mb-0.5 uppercase font-bold">
+                                        <span>Current: {headroom.leverageRatio.toFixed(2)}x</span>
+                                        <span>Target: {rec.conditionOperator} {rec.conditionThreshold.toFixed(2)}x</span>
+                                    </div>
+                                    <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
+                                        <div 
+                                            className="bg-indigo-400 h-full rounded-full transition-all duration-1000" 
+                                            // Scale: Assume "Starting Point" is current covenant limit? Too complex.
+                                            // Simple approach: Inverse percentage for "Less Than"
+                                            style={{ width: '50%' }} 
+                                        ></div> 
+                                    </div>
+                                    <div className="text-[9px] text-indigo-500 mt-0.5 text-right font-medium">
+                                        {(rec.progress || 0).toFixed(2)}x to go
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                     ))}
+                  </div>
+               </div>
+               )}
+
                <div className="bg-white p-5 rounded-xl border border-slate-200 flex flex-col justify-center items-center relative overflow-hidden shadow-sm">
                   <div className={`absolute inset-0 opacity-10 ${headroom.status === 'Breach' ? 'bg-red-500' : (headroom.status === 'Warning' ? 'bg-amber-500' : 'bg-emerald-500')}`}></div>
                   <div className="text-center z-10">
@@ -424,7 +713,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                             <div className="text-3xl font-bold text-emerald-600 flex items-center gap-2">
                                 <TrendingDown size={28} />
                                 {covenants.sustainabilityKpis.stepDownMarginMax 
-                                    ? (covenants.sustainabilityKpis.stepDownMarginMax * 100).toFixed(3) 
+                                    ? (covenants.sustainabilityKpis.stepDownMarginMax)
                                     : '0.00'}%
                             </div>
                             <div className="text-xs text-slate-400 mt-1">Interest rate reduction if targets met</div>
@@ -443,14 +732,16 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                                     {kpi.description || "Sustainability Target"}
                                 </div>
                                 <div className="flex items-end gap-1 mt-2">
+                                    <span className="text-xs text-emerald-600 mb-1 mr-1">Target:</span>
                                     <span className="text-xl font-bold text-slate-900">
                                         {kpi.targetValue}
                                     </span>
-                                    <span className="text-xs text-slate-500 mb-1">{kpi.unit}</span>
+                                    <span className="text-xs text-slate-500 mb-1">{kpi.unit === 'Percentage' ? '%' : kpi.unit}</span>
                                 </div>
                                 <div className="w-full bg-slate-100 h-1.5 rounded-full mt-3 overflow-hidden">
                                     <div className="bg-emerald-500 h-full rounded-full" style={{ width: '75%' }}></div>
                                 </div>
+                                <span className="text-xs text-red-300">Progress is mocked</span>
                             </div>
                         ))}
                     </div>
@@ -503,6 +794,8 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
             )}
         </div>
+        <Modal />
+        </>
     );
 };
 
